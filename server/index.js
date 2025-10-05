@@ -28,8 +28,9 @@ app.use(
       maxAge: 1000 * 60 * 60, // 1 hour
       sameSite: isProduction ? "none" : "lax", // "none" for cross-site in production, "lax" for localhost
       secure: isProduction, // true for HTTPS in production, false for HTTP localhost
-      httpOnly: false, // temporarily false for cross-origin debugging
+      httpOnly: true, // temporarily false for cross-origin debugging
       path: "/", // ensure cookie is sent for all paths
+      domain: isProduction ? undefined : undefined,
     },
   })
 );
@@ -74,7 +75,7 @@ app.use(
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
-
+    exposedHeaders: ["Set-Cookie"],
     optionsSuccessStatus: 200, // some legacy browsers (IE11, various SmartTVs) choke on 204
   })
 );
