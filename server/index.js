@@ -4,6 +4,7 @@ import bodyParser from "body-parser";
 import pg from "pg";
 import passport from "passport";
 import session from "express-session";
+import connectPgSimple from "connect-pg-simple";
 import { Strategy } from "passport-local";
 import bcrypt, { hash } from "bcrypt";
 import dotenv from "dotenv";
@@ -18,44 +19,31 @@ const saltRounds = 10;
 // Session setup
 const isProduction = process.env.NODE_ENV === "production";
 
-app.use(
-  session({
-    name: "connect.sid", // explicit session name
-    secret: process.env.SESSION_SECRET,
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      maxAge: 1000 * 60 * 60, // 1 hour
-      sameSite: isProduction ? "none" : "lax", // "none" for cross-site in production, "lax" for localhost
-      secure: isProduction, // true for HTTPS in production, false for HTTP localhost
-      httpOnly: true, // temporarily false for cross-origin debugging
-      path: "/", // ensure cookie is sent for all paths
-      domain: isProduction ? undefined : undefined,
-    },
-  })
-);
-
-// PostgreSQL setup
-// const db = new pg.Client({
-//   user: process.env.DB_USER,
-//   host: process.env.DB_HOST,
-//   database: process.env.DB_NAME,
-//   password: process.env.DB_PASSWORD,
-//   port: process.env.DB_PORT,
-// });
-
 const db = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }, // needed for Neon
 });
 // db.connect();
 
-// CORS
-const allowedOrigins = [
-  "http://localhost:5173",
-  "https://college-plum-alpha.vercel.app",
-  process.env.FRONTEND_URL,
-].filter(Boolean); // remove any undefined values
+const PgSession = connectPgSimple(session);
+
+const initSessionTable = async () => {
+  try {
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS "session" (
+        "sid" varchar NOT NULL COLLATE "default",
+        "sess" json NOT NULL,
+        "expire" timestamp(6) NOT NULL,
+        CONSTRAINT "session_pkey" PRIMARY KEY ("sid")
+      );
+      CREATE INDEX IF NOT EXISTS "IDX_session_expire" ON "session" ("expire");
+    `);
+    console.log("✅ Session table ready");
+  } catch (err) {
+    console.error("Session table error:", err);
+  }
+};
+initSessionTable();
 
 app.set("trust proxy", 1); // CRITICAL: Trust first proxy (Render uses proxies)
 
@@ -79,6 +67,43 @@ app.use(
     optionsSuccessStatus: 200, // some legacy browsers (IE11, various SmartTVs) choke on 204
   })
 );
+
+app.use(
+  session({
+    store: new PgSession({
+      pool: db,
+      tableName: "session",
+    }),
+    name: "connect.sid", // explicit session name
+    secret: process.env.SESSION_SECRET,
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      maxAge: 1000 * 60 * 60, // 1 hour
+      sameSite: isProduction ? "none" : "lax", // "none" for cross-site in production, "lax" for localhost
+      secure: isProduction, // true for HTTPS in production, false for HTTP localhost
+      httpOnly: false, // temporarily false for cross-origin debugging
+      path: "/", // ensure cookie is sent for all paths
+      domain: isProduction ? undefined : undefined,
+    },
+  })
+);
+
+// PostgreSQL setup
+// const db = new pg.Client({
+//   user: process.env.DB_USER,
+//   host: process.env.DB_HOST,
+//   database: process.env.DB_NAME,
+//   password: process.env.DB_PASSWORD,
+//   port: process.env.DB_PORT,
+// });
+
+// CORS
+const allowedOrigins = [
+  "http://localhost:5173",
+  "https://college-plum-alpha.vercel.app",
+  process.env.FRONTEND_URL,
+].filter(Boolean); // remove any undefined values
 
 // Middleware
 app.use(bodyParser.urlencoded({ extended: true }));
