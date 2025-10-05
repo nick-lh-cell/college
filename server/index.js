@@ -56,6 +56,8 @@ const allowedOrigins = [
   process.env.FRONTEND_URL,
 ].filter(Boolean); // remove any undefined values
 
+app.set("trust proxy", 1); // CRITICAL: Trust first proxy (Render uses proxies)
+
 app.use(
   cors({
     origin: function (origin, callback) {
@@ -70,6 +72,9 @@ app.use(
       }
     },
     credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+
     optionsSuccessStatus: 200, // some legacy browsers (IE11, various SmartTVs) choke on 204
   })
 );
@@ -90,7 +95,7 @@ app.use((req, res, next) => {
         req.session?.id
       } | Auth: ${req.isAuthenticated()} | User: ${
         req.user?.username
-      } | Cookies: ${cookies.substring(0, 50)}...`
+      } | Cookies: ${cookies.substring(0, 80)}...`
     );
   }
   next();
@@ -140,9 +145,13 @@ app.post("/login", (req, res, next) => {
 
   passport.authenticate("local", (err, user, info) => {
     console.log(info);
-    if (err) return next(err);
+    if (err) {
+      console.error("Login error:", err);
+      return next(err);
+    }
 
     if (!user) {
+      console.log("Authentication failed:", info?.message);
       return res
         .status(401)
         .json({ message: info ? info.message : "Invalid credentials" });
@@ -150,11 +159,15 @@ app.post("/login", (req, res, next) => {
 
     // Role check manually
     if (user.role !== roleFromClient) {
+      console.log("Role mismatch:", user.role, "vs", roleFromClient);
       return res.status(403).json({ message: "Role mismatch" });
     }
 
     req.login(user, (err) => {
-      if (err) return next(err);
+      if (err) {
+        console.error("❌ Login session error:", err);
+        return next(err);
+      }
       console.log(
         "✅ Login successful for:",
         user.username,
@@ -163,6 +176,7 @@ app.post("/login", (req, res, next) => {
         "Session ID:",
         req.session.id
       );
+      console.log("🍪 Cookie settings:", req.session.cookie);
       console.log("🍪 Response headers Set-Cookie:", res.get("Set-Cookie"));
       return res.json({ message: "Login successful", user });
     });
@@ -175,9 +189,11 @@ function isAuthenticated(req, res, next) {
     "🔐 isAuthenticated check:",
     req.isAuthenticated(),
     "Session:",
-    req.session.id,
+    req.session?.id,
     "User:",
-    req.user?.username
+    req.user?.username,
+    "cookies:",
+    req.headers.cookie?.substring(0, 50)
   );
   if (req.isAuthenticated()) return next();
   res.status(401).json({ message: "Unauthorized" });
@@ -189,7 +205,9 @@ function requireRole(role) {
       `🔐 requireRole(${role}) check:`,
       req.isAuthenticated(),
       "User role:",
-      req.user?.role
+      req.user?.role,
+      "matches:",
+      req.user?.role === role
     );
     if (!req.isAuthenticated()) {
       return res.status(401).json({ message: "Unauthorized" });
@@ -202,6 +220,29 @@ function requireRole(role) {
     next();
   };
 }
+
+app.get("/auth/check", (req, res) => {
+  console.log("🔍 Auth check:", {
+    authenticated: req.isAuthenticated(),
+    sessionID: req.session?.id,
+    user: req.user?.username,
+    cookies: req.headers.cookie,
+  });
+
+  if (req.isAuthenticated()) {
+    res.json({
+      authenticated: true,
+      user: {
+        id: req.user.id,
+        username: req.user.username,
+        email: req.user.email,
+        role: req.user.role,
+      },
+    });
+  } else {
+    res.status(401).json({ authenticated: false, message: "Unauthorized" });
+  }
+});
 
 app.get("/reporter", requireRole("reporter"), (req, res) => {
   if (req.isAuthenticated()) {
@@ -431,14 +472,6 @@ app.get("/profile", isAuthenticated, async (req, res) => {
   }
 });
 
-app.get("/auth/check", (req, res) => {
-  if (req.isAuthenticated()) {
-    res.json({ authenticated: true, user: req.user });
-  } else {
-    res.status(401).json({ authenticated: "Unauthorized" });
-  }
-});
-
 app.post("/contact", async (req, res) => {
   let { name, email, message } = req.body;
   try {
@@ -458,13 +491,23 @@ app.post("/contact", async (req, res) => {
     res.status(500).json({ message: "Failed submitting form " });
   }
 });
-app.post("/logout", (req, res) => {
+app.post("/logout", (req, res, next) => {
+  console.log("👋 Logout request from:", req.user?.username);
   req.logout(function (err) {
     if (err) {
       return next(err);
     }
-    req.session.destroy(() => {
-      res.clearCookie("connect.sid"); // Optional: clear cookie
+    req.session.destroy((err) => {
+      if (err) {
+        console.error(" Session destroy error:", err);
+      }
+      // res.clearCookie("connect.sid");
+      res.clearCookie("connect.sid", {
+        path: "/",
+        httpOnly: false,
+        secure: isProduction,
+        sameSite: isProduction ? "none" : "lax",
+      });
       res.status(200).json({ message: "Logged out successfully" });
     });
   });
@@ -483,4 +526,7 @@ app.get("/test-users", async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
   console.log(`🔍 Debug: Test users at http://localhost:${PORT}/test-users`);
+  console.log(`🌍 Environment: ${isProduction ? "PRODUCTION" : "DEVELOPMENT"}`);
+  console.log(`🍪 Secure cookies: ${isProduction}`);
+  console.log(`🔒 SameSite: ${isProduction ? "none" : "lax"}`);
 });
